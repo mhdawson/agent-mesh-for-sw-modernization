@@ -290,43 +290,5 @@ class DependencyAnalyzer:
                 raise Exception("Could not submit question at this time")
 
             report += f"### Question: {question}\n\n###Answer: {result}\n\n"
-    
-        async def generate_report(self, service_name: str):
-    
-            deps = self._find_dependencies(service_name)
-    
-            logging.info(f"Dependencies for {service_name}:")
-    
-            for dep in deps:
-    
-                logging.info(f"  {dep['from']} -> {dep['to']} ({dep['type']})")
-    
-            dependents = self._find_dependents("database")
-    
-            logging.info("\nModules depending on database:")
-    
-            for dep in dependents:
-    
-                logging.info(f"  {dep['from']} -> {dep['to']}")
-    
-            # cycles = self._find_circular_dependencies()
-    
-            # if cycles:
-    
-            #     logging.info("\n⚠️  Circular dependencies found:")
-    
-            #     print(cycles)
-    
-            #     for cycle in cycles:
-    
-            #         logging.info(f"  {' -> '.join(cycle)}")
-    
-            layers = self._get_dependency_layers()
-    
-            logging.info("\nArchitectural Layers:")
-    
-            logging.info(f"  Leaf modules (no dependencies): {layers['leaf_modules']}")
-    
-            logging.info(f"  Top modules (many dependencies): {layers['top_modules']}")
-    
-    
+            
+        return report
