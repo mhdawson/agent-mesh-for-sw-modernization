@@ -77,8 +77,8 @@ GITHUB_TARGET_BRANCH       ?= main
 GIT_USERNAME               ?=
 GIT_TOKEN                  ?=
 NO_DELETE           ?= 0
-PIPELINE_SERVER_URL := $(shell oc get route -n $(NAMESPACE) -l app=ds-pipeline-dspa \
-                            -o jsonpath='https://{.items[0].spec.host}' 2>/dev/null)
+PIPELINE_SERVER_URL = $(shell oc get route -n $(NAMESPACE) -l app=ds-pipeline-dspa \
+                           -o jsonpath='https://{.items[0].spec.host}' 2>/dev/null)
 RUN_ID              := $(shell date +%Y%m%d%H%M%S)
 PVC_NAME            := code-understanding-pipeline-$(RUN_ID)
 INDEX_TAR           := graphrag-index-$(RUN_ID).tar.gz
