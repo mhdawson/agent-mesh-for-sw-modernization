@@ -13,14 +13,16 @@ GIT_SECRET_ENV_VARS = {"GIT_USERNAME": "GIT_USERNAME", "GIT_TOKEN": "GIT_TOKEN"}
 
 LLM_SECRET_NAME = "code-understanding-env"
 LLM_ENV_VARS = {
-    "GRAPHRAG_LLM_TOKEN":            "GRAPHRAG_LLM_TOKEN",
-    "GRAPHRAG_LLM_ID":               "GRAPHRAG_LLM_ID",
-    "GRAPHRAG_LLM_API_BASE":         "GRAPHRAG_LLM_API_BASE",
+    "GRAPHRAG_LLM_TOKEN":             "GRAPHRAG_LLM_TOKEN",
+    "GRAPHRAG_LLM_ID":                "GRAPHRAG_LLM_ID",
+    "GRAPHRAG_LLM_API_BASE":          "GRAPHRAG_LLM_API_BASE",
+    "GRAPHRAG_LLM_PROVIDER":          "GRAPHRAG_LLM_PROVIDER",
     "GRAPHRAG_LLM_PROVIDER_GRAPHRAG": "GRAPHRAG_LLM_PROVIDER_GRAPHRAG",
-    "EMBED_LLM_TOKEN":               "EMBED_LLM_TOKEN",
-    "EMBED_LLM_API_BASE":            "EMBED_LLM_API_BASE",
-    "EMBED_LLM_ID":                  "EMBED_LLM_ID",
-    "EMBED_LLM_PROVIDER_GRAPHRAG":   "EMBED_LLM_PROVIDER_GRAPHRAG",
+    "EMBED_LLM_TOKEN":                "EMBED_LLM_TOKEN",
+    "EMBED_LLM_API_BASE":             "EMBED_LLM_API_BASE",
+    "EMBED_LLM_ID":                   "EMBED_LLM_ID",
+    "EMBED_LLM_PROVIDER":             "EMBED_LLM_PROVIDER",
+    "EMBED_LLM_PROVIDER_GRAPHRAG":    "EMBED_LLM_PROVIDER_GRAPHRAG",
 }
 
 
@@ -30,12 +32,15 @@ def git_clone_step(repo_url: str, repo_ref: str):
         image=DATA_GENERATION_IMAGE,
         command=["sh", "-c"],
         args=[(
+            f'git config --global --add safe.directory {MOUNT_PATH} && '
             'if [ -n "$GIT_TOKEN" ]; then '
             "git config --global credential.helper "
             "'!f() {{ echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }}; f'; "
             'fi && '
-            f'git clone {{repo_url}} {MOUNT_PATH} && '
-            f'cd {MOUNT_PATH} && git checkout {{repo_ref}}'
+            f'git -C {MOUNT_PATH} init && '
+            f'git -C {MOUNT_PATH} remote add origin {{repo_url}} && '
+            f'git -C {MOUNT_PATH} fetch origin {{repo_ref}} && '
+            f'git -C {MOUNT_PATH} checkout -B {{repo_ref}} FETCH_HEAD'
         ).format(repo_url=repo_url, repo_ref=repo_ref)],
     )
 
@@ -52,18 +57,30 @@ def data_generation_step(
 ):
     return dsl.ContainerSpec(
         image=DATA_GENERATION_IMAGE,
-        command=["papermill"],
+        # Use the papermill Python API (not CLI) so _LANGUAGES is passed as a real
+        # Python list object. The CLI always injects parameter values as strings,
+        # so ['python'] becomes the string "['python']" which iterates as characters.
+        # The Python API uses repr() which renders ['python'] as a list literal.
+        command=["python3", "-c"],
         args=[
-            f"{WORKDIR}/data_generation_graphrag_pipeline.ipynb",
-            "/dev/null",
-            "--cwd", WORKDIR,
-            "-p", "_GIT_REPO",        git_repo,
-            "-p", "_GIT_BRANCH",      git_branch,
-            "-p", "_SOURCE_PATH",     source_path,
-            "-p", "_TARGET_PATH",     target_path,
-            "-p", "_MAX_CONCURRENCY", max_concurrency,
-            "-p", "_N_COMPLETIONS",   n_completions,
-            "-p", "_LANGUAGES",       languages,
+            (
+                'import papermill as pm, sys; '
+                'langs = [x.strip() for x in sys.argv[7].split(",")]; '
+                f'pm.execute_notebook("{WORKDIR}/data_generation_graphrag_pipeline.ipynb", "/dev/null", '
+                f'cwd="{WORKDIR}", log_output=True, '
+                'parameters=dict('
+                '_GIT_REPO=sys.argv[1], _GIT_BRANCH=sys.argv[2], '
+                '_SOURCE_PATH=sys.argv[3], _TARGET_PATH=sys.argv[4], '
+                '_MAX_CONCURRENCY=int(sys.argv[5]), _N_COMPLETIONS=int(sys.argv[6]), '
+                '_LANGUAGES=langs))'
+            ),
+            git_repo,         # sys.argv[1]
+            git_branch,       # sys.argv[2]
+            source_path,      # sys.argv[3]
+            target_path,      # sys.argv[4]
+            max_concurrency,  # sys.argv[5]
+            n_completions,    # sys.argv[6]
+            languages,        # sys.argv[7]
         ],
     )
 
@@ -77,6 +94,8 @@ def data_indexing_step(codebase_path: str, graphrag_source_path: str):
             f"{WORKDIR}/data_indexing_graphrag_pipeline.ipynb",
             "/dev/null",
             "--cwd", WORKDIR,
+            "--log-output",
+            "--no-progress-bar",
             "-p", "_CODEBASE_PATH",        codebase_path,
             "-p", "_GRAPHRAG_SOURCE_PATH",  graphrag_source_path,
         ],
@@ -86,7 +105,7 @@ def data_indexing_step(codebase_path: str, graphrag_source_path: str):
 @dsl.container_component
 def tar_step(graphrag_source_path: str):
     return dsl.ContainerSpec(
-        image="registry.access.redhat.com/ubi9/ubi-minimal",
+        image="registry.access.redhat.com/ubi9",
         command=["sh", "-c"],
         args=[f"cd {WORKDIR} && tar -czf graphrag-index.tar.gz {{graphrag_source_path}}/output/".format(
             graphrag_source_path=graphrag_source_path
@@ -104,7 +123,7 @@ def code_understanding_pipeline(
     repo_ref:             str = "main",
     git_repo:             str = "",
     git_branch:           str = "main",
-    languages:            str = '["python"]',
+    languages:            str = "python",
     source_path:          str = "source",
     target_path:          str = "target",
     graphrag_source_path: str = "graph_rag_app/source",

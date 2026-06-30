@@ -5,9 +5,13 @@ metadata:
   namespace: {{ .Values.namespace }}
   annotations:
     "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-delete-policy": before-hook-creation
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-failed
 spec:
+  activeDeadlineSeconds: 600
   template:
+    metadata:
+      labels:
+        pipelines.kubeflow.org/v2_component: "true"
     spec:
       restartPolicy: Never
       containers:
@@ -17,11 +21,18 @@ spec:
             - sh
             - -c
             - |
-              HOME=/tmp pip3 install kfp --quiet --user && HOME=/tmp python3 -c "
+              pip3 install kfp --quiet --target /tmp/kfp-packages
+              echo "Waiting for KFP server..."
+              until python3 -c "import urllib.request,ssl; ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; urllib.request.urlopen('https://ds-pipeline-dspa.{{ .Values.namespace }}.svc.cluster.local:8888/apis/v2beta1/healthz',timeout=5,context=ctx)" 2>/dev/null; do
+                echo "KFP server not ready, retrying in 10s..."
+                sleep 10
+              done
+              echo "KFP server ready"
+              PYTHONPATH=/tmp/kfp-packages HOME=/tmp python3 -c "
               from kfp.client import Client
 
-              KFP_ENDPOINT = 'http://ds-pipeline-dspa.{{ .Values.namespace }}.svc.cluster.local:8888'
-              c = Client(host=KFP_ENDPOINT)
+              KFP_ENDPOINT = 'https://ds-pipeline-dspa.{{ .Values.namespace }}.svc.cluster.local:8888'
+              c = Client(host=KFP_ENDPOINT, verify_ssl=False)
 
               def list_all_pipelines():
                   results, token = [], None

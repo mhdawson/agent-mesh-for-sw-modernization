@@ -5,7 +5,7 @@
 #    git_branch: str [Default: 'main']
 #    git_repo: str [Default: '']
 #    graphrag_source_path: str [Default: 'graph_rag_app/source']
-#    languages: str [Default: '["python"]']
+#    languages: str [Default: 'python']
 #    max_concurrency: int [Default: 2.0]
 #    n_completions: int [Default: 1.0]
 #    pvc_name: str [Default: '']
@@ -59,33 +59,22 @@ deploymentSpec:
     exec-data-generation-step:
       container:
         args:
-        - /opt/app-root/src/workflows/code_understanding/data_generation_graphrag_pipeline.ipynb
-        - /dev/null
-        - --cwd
-        - /opt/app-root/src/workflows/code_understanding
-        - -p
-        - _GIT_REPO
+        - import papermill as pm, sys; langs = [x.strip() for x in sys.argv[7].split(",")];
+          pm.execute_notebook("/opt/app-root/src/workflows/code_understanding/data_generation_graphrag_pipeline.ipynb",
+          "/dev/null", cwd="/opt/app-root/src/workflows/code_understanding", log_output=True,
+          parameters=dict(_GIT_REPO=sys.argv[1], _GIT_BRANCH=sys.argv[2], _SOURCE_PATH=sys.argv[3],
+          _TARGET_PATH=sys.argv[4], _MAX_CONCURRENCY=int(sys.argv[5]), _N_COMPLETIONS=int(sys.argv[6]),
+          _LANGUAGES=langs))
         - '{{$.inputs.parameters[''git_repo'']}}'
-        - -p
-        - _GIT_BRANCH
         - '{{$.inputs.parameters[''git_branch'']}}'
-        - -p
-        - _SOURCE_PATH
         - '{{$.inputs.parameters[''source_path'']}}'
-        - -p
-        - _TARGET_PATH
         - '{{$.inputs.parameters[''target_path'']}}'
-        - -p
-        - _MAX_CONCURRENCY
         - '{{$.inputs.parameters[''max_concurrency'']}}'
-        - -p
-        - _N_COMPLETIONS
         - '{{$.inputs.parameters[''n_completions'']}}'
-        - -p
-        - _LANGUAGES
         - '{{$.inputs.parameters[''languages'']}}'
         command:
-        - papermill
+        - python3
+        - -c
         image: quay.io/midawson/agent-mesh-for-sw-modernization-data-generation:0.0.1-dev
     exec-data-indexing-step:
       container:
@@ -94,6 +83,8 @@ deploymentSpec:
         - /dev/null
         - --cwd
         - /opt/app-root/src/workflows/code_understanding
+        - --log-output
+        - --no-progress-bar
         - -p
         - _CODEBASE_PATH
         - '{{$.inputs.parameters[''codebase_path'']}}'
@@ -106,10 +97,13 @@ deploymentSpec:
     exec-git-clone-step:
       container:
         args:
-        - if [ -n "$GIT_TOKEN" ]; then git config --global credential.helper '!f()
-          { echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }; f'; fi && git
-          clone {{$.inputs.parameters['repo_url']}} /opt/app-root/src && cd /opt/app-root/src
-          && git checkout {{$.inputs.parameters['repo_ref']}}
+        - git config --global --add safe.directory /opt/app-root/src && if [ -n "$GIT_TOKEN"
+          ]; then git config --global credential.helper '!f() { echo username=$GIT_USERNAME;
+          echo password=$GIT_TOKEN; }; f'; fi && git -C /opt/app-root/src init &&
+          git -C /opt/app-root/src remote add origin {{$.inputs.parameters['repo_url']}}
+          && git -C /opt/app-root/src fetch origin {{$.inputs.parameters['repo_ref']}}
+          && git -C /opt/app-root/src checkout -B {{$.inputs.parameters['repo_ref']}}
+          FETCH_HEAD
         command:
         - sh
         - -c
@@ -122,7 +116,7 @@ deploymentSpec:
         command:
         - sh
         - -c
-        image: registry.access.redhat.com/ubi9/ubi-minimal
+        image: registry.access.redhat.com/ubi9
 pipelineInfo:
   description: Clone repo, generate GraphRAG metadata, build index, and tar output
   name: code-understanding-pipeline
@@ -210,7 +204,7 @@ root:
         isOptional: true
         parameterType: STRING
       languages:
-        defaultValue: '["python"]'
+        defaultValue: python
         isOptional: true
         parameterType: STRING
       max_concurrency:
@@ -262,6 +256,8 @@ platforms:
               secretKey: GRAPHRAG_LLM_ID
             - envVar: GRAPHRAG_LLM_API_BASE
               secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER
+              secretKey: GRAPHRAG_LLM_PROVIDER
             - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
               secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
             - envVar: EMBED_LLM_TOKEN
@@ -270,6 +266,8 @@ platforms:
               secretKey: EMBED_LLM_API_BASE
             - envVar: EMBED_LLM_ID
               secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER
+              secretKey: EMBED_LLM_PROVIDER
             - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
               secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
             optional: false
@@ -291,6 +289,8 @@ platforms:
               secretKey: GRAPHRAG_LLM_ID
             - envVar: GRAPHRAG_LLM_API_BASE
               secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER
+              secretKey: GRAPHRAG_LLM_PROVIDER
             - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
               secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
             - envVar: EMBED_LLM_TOKEN
@@ -299,6 +299,8 @@ platforms:
               secretKey: EMBED_LLM_API_BASE
             - envVar: EMBED_LLM_ID
               secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER
+              secretKey: EMBED_LLM_PROVIDER
             - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
               secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
             optional: false

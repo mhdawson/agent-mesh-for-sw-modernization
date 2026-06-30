@@ -25,13 +25,16 @@ spec:
             - sh
             - -c
             - |
+              git config --global --add safe.directory /opt/app-root/src
               if [ -d /opt/app-root/src/.git ]; then
                 git -C /opt/app-root/src fetch origin
                 git -C /opt/app-root/src checkout "{{ .Values.repoRef }}"
                 git -C /opt/app-root/src reset --hard "origin/{{ .Values.repoRef }}"
               else
-                git clone "{{ .Values.repoUrl }}" /opt/app-root/src
-                git -C /opt/app-root/src checkout "{{ .Values.repoRef }}"
+                git -C /opt/app-root/src init
+                git -C /opt/app-root/src remote add origin "{{ .Values.repoUrl }}"
+                git -C /opt/app-root/src fetch origin "{{ .Values.repoRef }}"
+                git -C /opt/app-root/src checkout -B "{{ .Values.repoRef }}" FETCH_HEAD
               fi
           envFrom:
             - secretRef:

@@ -81,7 +81,9 @@ PIPELINE_SERVER_URL = $(shell oc get route -n $(NAMESPACE) -l app=ds-pipeline-ds
                            -o jsonpath='https://{.items[0].spec.host}' 2>/dev/null)
 RUN_ID              := $(shell date +%Y%m%d%H%M%S)
 PVC_NAME            := code-understanding-pipeline-$(RUN_ID)
-INDEX_TAR           := graphrag-index-$(RUN_ID).tar.gz
+INDEXES_DIR         := indexes
+REPO_NAME           := $(basename $(notdir $(GITHUB_TARGET_REPO)))
+INDEX_TAR           := $(INDEXES_DIR)/graphrag-index-$(if $(REPO_NAME),$(REPO_NAME)-,)$(RUN_ID).tar.gz
 QUESTION            ?= Which modules would be riskiest to refactor first? Include the fully qualified names.
 REPORTS_DIR         := reports
 
@@ -92,8 +94,8 @@ endef
 
 define delete_pvc_unless_kept
 	@if [ "$(NO_DELETE)" != "1" ]; then \
-		oc delete pvc $(1) -n $(NAMESPACE) --ignore-not-found; \
-		echo "PVC $(1) deleted"; \
+		oc delete pvc $(1) -n $(NAMESPACE) --ignore-not-found --wait=false; \
+		echo "PVC $(1) deletion requested"; \
 	else \
 		echo "NO_DELETE=1 — PVC $(1) retained"; \
 	fi
@@ -114,9 +116,9 @@ index-repo: ## Run indexing pipeline: make index-repo NAMESPACE=x GITHUB_TARGET_
 	$(call create_pvc,$(PVC_NAME))
 	OC_TOKEN=$$(oc whoami -t) \
 	uv run --with kfp python3 -c "\
-import os; \
+import os, urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning); \
 from kfp.client import Client; \
-c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN']); \
+c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN'], verify_ssl=False); \
 run = c.create_run_from_pipeline_package('helm/files/code_understanding_pipeline.yaml', \
     arguments={'pvc_name': '$(PVC_NAME)', 'repo_url': '$(AGENT_MESH_REPO_URL)', \
                'repo_ref': '$(AGENT_MESH_REPO_REF)', 'git_repo': '$(GITHUB_TARGET_REPO)', \
@@ -125,31 +127,32 @@ print(f'Run submitted: {run.run_id}'); \
 result = c.wait_for_run_completion(run.run_id, timeout=7200); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
-	oc run index-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc run index-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/index-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
+	mkdir -p $(INDEXES_DIR)
 	oc cp $(NAMESPACE)/index-downloader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz ./$(INDEX_TAR)
 	oc delete pod index-downloader-$(RUN_ID) -n $(NAMESPACE)
-	@echo "Index downloaded to ./$(INDEX_TAR)"
+	@echo "Index downloaded to $(INDEX_TAR)"
 	$(call delete_pvc_unless_kept,$(PVC_NAME))
 
 run-analysis: ## Run analysis pipeline: make run-analysis NAMESPACE=x INDEX_TAR=graphrag-index-....tar.gz
 	@test -f "$(INDEX_TAR)" || \
-		(echo "ERROR: $(INDEX_TAR) not found — pass the tar from a previous index-repo run: make run-analysis INDEX_TAR=graphrag-index-YYYYMMDDHHMMSS.tar.gz"; exit 1)
+		(echo "ERROR: $(INDEX_TAR) not found — pass the tar from a previous index-repo run: make run-analysis INDEX_TAR=indexes/graphrag-index-<repo>-YYYYMMDDHHMMSS.tar.gz"; exit 1)
 	@test -n "$(PIPELINE_SERVER_URL)" || \
 		(echo "ERROR: could not derive PIPELINE_SERVER_URL — check oc login and NAMESPACE"; exit 1)
 	$(call create_pvc,$(PVC_NAME))
-	oc run analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc run analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	oc cp ./$(INDEX_TAR) $(NAMESPACE)/analysis-uploader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz
 	oc delete pod analysis-uploader-$(RUN_ID) -n $(NAMESPACE)
 	$(file >/tmp/pipeline_question_$(RUN_ID).txt,$(QUESTION))
 	OC_TOKEN=$$(oc whoami -t) \
 	uv run --with kfp python3 -c "\
-import os; \
+import os, urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning); \
 from kfp.client import Client; \
-c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN']); \
+c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN'], verify_ssl=False); \
 run = c.create_run_from_pipeline_package('helm/files/code_analysis_pipeline.yaml', \
     arguments={'pvc_name': '$(PVC_NAME)', 'repo_url': '$(AGENT_MESH_REPO_URL)', \
                'repo_ref': '$(AGENT_MESH_REPO_REF)', 'index_tar': 'graphrag-index.tar.gz', \
@@ -159,8 +162,8 @@ result = c.wait_for_run_completion(run.run_id, timeout=3600); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 	mkdir -p $(REPORTS_DIR)
-	oc run analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc run analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/adhoc_query.md ./$(REPORTS_DIR)/
 	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/migration_report.md ./$(REPORTS_DIR)/
@@ -196,6 +199,10 @@ install:
 		--set repoRef=$(or $(GIT_BRANCH),main)
 
 uninstall:
-	helm uninstall code-understanding --namespace $(NAMESPACE)
-	oc delete pvc workbench-data-generation-pvc workbench-data-indexing-pvc -n $(NAMESPACE) --ignore-not-found
-	oc delete secret git-credentials -n $(NAMESPACE) --ignore-not-found
+	helm uninstall code-understanding --namespace $(NAMESPACE) 2>/dev/null || true
+	oc delete job minio-init register-pipelines -n $(NAMESPACE) --ignore-not-found
+	oc delete pvc workbench-data-generation-pvc workbench-data-indexing-pvc minio-pvc -n $(NAMESPACE) --ignore-not-found
+	oc delete secret git-credentials code-understanding-env -n $(NAMESPACE) --ignore-not-found
+	oc delete workflow --all -n $(NAMESPACE) 2>/dev/null || true
+	oc get pod -n $(NAMESPACE) -o name 2>/dev/null | grep -E 'index-downloader-|analysis-uploader-|analysis-downloader-' | xargs -r oc delete -n $(NAMESPACE) --ignore-not-found
+	oc get pvc -n $(NAMESPACE) -o name 2>/dev/null | grep code-understanding-pipeline | xargs -r oc delete -n $(NAMESPACE) --wait=false

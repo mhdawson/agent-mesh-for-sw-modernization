@@ -9,6 +9,12 @@ repoRef: "main"
 storage:
   size: 50Gi
 
+minio:
+  storage: 20Gi
+  rootUser: minio
+  rootPassword: minio123
+  bucket: mlpipeline
+
 dataGeneration:
   name: agent-mesh-for-sw-modernization-data-generation
   resources:

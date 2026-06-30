@@ -12,14 +12,16 @@ GIT_SECRET_ENV_VARS = {"GIT_USERNAME": "GIT_USERNAME", "GIT_TOKEN": "GIT_TOKEN"}
 
 LLM_SECRET_NAME = "code-understanding-env"
 LLM_ENV_VARS = {
-    "GRAPHRAG_LLM_TOKEN":            "GRAPHRAG_LLM_TOKEN",
-    "GRAPHRAG_LLM_ID":               "GRAPHRAG_LLM_ID",
-    "GRAPHRAG_LLM_API_BASE":         "GRAPHRAG_LLM_API_BASE",
+    "GRAPHRAG_LLM_TOKEN":             "GRAPHRAG_LLM_TOKEN",
+    "GRAPHRAG_LLM_ID":                "GRAPHRAG_LLM_ID",
+    "GRAPHRAG_LLM_API_BASE":          "GRAPHRAG_LLM_API_BASE",
+    "GRAPHRAG_LLM_PROVIDER":          "GRAPHRAG_LLM_PROVIDER",
     "GRAPHRAG_LLM_PROVIDER_GRAPHRAG": "GRAPHRAG_LLM_PROVIDER_GRAPHRAG",
-    "EMBED_LLM_TOKEN":               "EMBED_LLM_TOKEN",
-    "EMBED_LLM_API_BASE":            "EMBED_LLM_API_BASE",
-    "EMBED_LLM_ID":                  "EMBED_LLM_ID",
-    "EMBED_LLM_PROVIDER_GRAPHRAG":   "EMBED_LLM_PROVIDER_GRAPHRAG",
+    "EMBED_LLM_TOKEN":                "EMBED_LLM_TOKEN",
+    "EMBED_LLM_API_BASE":             "EMBED_LLM_API_BASE",
+    "EMBED_LLM_ID":                   "EMBED_LLM_ID",
+    "EMBED_LLM_PROVIDER":             "EMBED_LLM_PROVIDER",
+    "EMBED_LLM_PROVIDER_GRAPHRAG":    "EMBED_LLM_PROVIDER_GRAPHRAG",
 }
 
 
@@ -29,12 +31,15 @@ def git_clone_step(repo_url: str, repo_ref: str):
         image=DATA_INDEXING_IMAGE,
         command=["sh", "-c"],
         args=[(
+            f'git config --global --add safe.directory {MOUNT_PATH} && '
             'if [ -n "$GIT_TOKEN" ]; then '
             "git config --global credential.helper "
             "'!f() {{ echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }}; f'; "
             'fi && '
-            f'git clone {{repo_url}} {MOUNT_PATH} && '
-            f'cd {MOUNT_PATH} && git checkout {{repo_ref}}'
+            f'git -C {MOUNT_PATH} init && '
+            f'git -C {MOUNT_PATH} remote add origin {{repo_url}} && '
+            f'git -C {MOUNT_PATH} fetch origin {{repo_ref}} && '
+            f'git -C {MOUNT_PATH} checkout -B {{repo_ref}} FETCH_HEAD'
         ).format(repo_url=repo_url, repo_ref=repo_ref)],
     )
 
@@ -42,7 +47,7 @@ def git_clone_step(repo_url: str, repo_ref: str):
 @dsl.container_component
 def extract_step(index_tar: str):
     return dsl.ContainerSpec(
-        image="registry.access.redhat.com/ubi9/ubi-minimal",
+        image="registry.access.redhat.com/ubi9",
         command=["sh", "-c"],
         args=[f"cd {WORKDIR} && tar -xzf {{index_tar}}".format(index_tar=index_tar)],
     )
@@ -57,6 +62,8 @@ def analysis_step(graphrag_source_path: str, question: str, output_dir: str):
             f"{WORKDIR}/data_analysis_graphrag_pipeline.ipynb",
             "/dev/null",
             "--cwd", WORKDIR,
+            "--log-output",
+            "--no-progress-bar",
             "-p", "_GRAPHRAG_SOURCE_PATH", graphrag_source_path,
             "-p", "_QUESTION",             question,
             "-p", "_OUTPUT_DIR",           output_dir,

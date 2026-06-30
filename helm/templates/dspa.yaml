@@ -1,0 +1,37 @@
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: dspa
+  namespace: {{ .Values.namespace }}
+spec:
+  apiServer:
+    deploy: true
+    enableOauth: true
+    enableSamplePipeline: false
+  database:
+    disableHealthCheck: false
+    mariaDB:
+      deploy: true
+      pipelineDBName: mlpipeline
+      pvcSize: 10Gi
+      username: mlpipeline
+  dspVersion: v2
+  objectStorage:
+    disableHealthCheck: false
+    externalStorage:
+      basePath: ""
+      bucket: {{ .Values.minio.bucket }}
+      host: minio.{{ .Values.namespace }}
+      port: "9000"
+      region: us-east-1
+      s3CredentialsSecret:
+        accessKey: user
+        secretKey: password
+        secretName: minio
+      scheme: http
+  persistenceAgent:
+    deploy: true
+    numWorkers: 2
+  scheduledWorkflow:
+    cronScheduleTimezone: UTC
+    deploy: true

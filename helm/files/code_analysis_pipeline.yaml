@@ -43,6 +43,8 @@ deploymentSpec:
         - /dev/null
         - --cwd
         - /opt/app-root/src/workflows/code_understanding
+        - --log-output
+        - --no-progress-bar
         - -p
         - _GRAPHRAG_SOURCE_PATH
         - '{{$.inputs.parameters[''graphrag_source_path'']}}'
@@ -62,14 +64,17 @@ deploymentSpec:
         command:
         - sh
         - -c
-        image: registry.access.redhat.com/ubi9/ubi-minimal
+        image: registry.access.redhat.com/ubi9
     exec-git-clone-step:
       container:
         args:
-        - if [ -n "$GIT_TOKEN" ]; then git config --global credential.helper '!f()
-          { echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }; f'; fi && git
-          clone {{$.inputs.parameters['repo_url']}} /opt/app-root/src && cd /opt/app-root/src
-          && git checkout {{$.inputs.parameters['repo_ref']}}
+        - git config --global --add safe.directory /opt/app-root/src && if [ -n "$GIT_TOKEN"
+          ]; then git config --global credential.helper '!f() { echo username=$GIT_USERNAME;
+          echo password=$GIT_TOKEN; }; f'; fi && git -C /opt/app-root/src init &&
+          git -C /opt/app-root/src remote add origin {{$.inputs.parameters['repo_url']}}
+          && git -C /opt/app-root/src fetch origin {{$.inputs.parameters['repo_ref']}}
+          && git -C /opt/app-root/src checkout -B {{$.inputs.parameters['repo_ref']}}
+          FETCH_HEAD
         command:
         - sh
         - -c
@@ -175,6 +180,8 @@ platforms:
               secretKey: GRAPHRAG_LLM_ID
             - envVar: GRAPHRAG_LLM_API_BASE
               secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER
+              secretKey: GRAPHRAG_LLM_PROVIDER
             - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
               secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
             - envVar: EMBED_LLM_TOKEN
@@ -183,6 +190,8 @@ platforms:
               secretKey: EMBED_LLM_API_BASE
             - envVar: EMBED_LLM_ID
               secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER
+              secretKey: EMBED_LLM_PROVIDER
             - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
               secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
             optional: false

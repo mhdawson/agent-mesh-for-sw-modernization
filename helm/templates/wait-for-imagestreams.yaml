@@ -6,7 +6,7 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "1"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -16,7 +16,7 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "1"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 rules:
   - apiGroups: ["image.openshift.io"]
     resources: ["imagestreams"]
@@ -30,7 +30,7 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "1"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 subjects:
   - kind: ServiceAccount
     name: imagestream-waiter
@@ -48,8 +48,9 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "5"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 spec:
+  activeDeadlineSeconds: 600
   template:
     spec:
       serviceAccountName: imagestream-waiter
@@ -61,17 +62,27 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for ImageStreams to import..."
-              until oc get imagestream agent-mesh-data-generation -n {{ .Values.namespace }} \
-                -o jsonpath='{.status.tags[0].items[0].image}' 2>/dev/null | grep -q sha256; do
-                echo "Waiting for agent-mesh-data-generation..."
-                sleep 5
-              done
-              echo "agent-mesh-data-generation ready"
-              until oc get imagestream agent-mesh-data-indexing -n {{ .Values.namespace }} \
-                -o jsonpath='{.status.tags[0].items[0].image}' 2>/dev/null | grep -q sha256; do
-                echo "Waiting for agent-mesh-data-indexing..."
-                sleep 5
-              done
-              echo "agent-mesh-data-indexing ready"
+              wait_for_imagestream() {
+                local name=$1
+                while true; do
+                  status=$(oc get imagestream "$name" -n {{ .Values.namespace }} \
+                    -o jsonpath='{.status.tags[0].conditions[?(@.type=="ImportSuccess")].status}' 2>/dev/null)
+                  if [ "$status" = "False" ]; then
+                    msg=$(oc get imagestream "$name" -n {{ .Values.namespace }} \
+                      -o jsonpath='{.status.tags[0].conditions[?(@.type=="ImportSuccess")].message}' 2>/dev/null)
+                    echo "ERROR: ImageStream $name import failed: $msg"
+                    exit 1
+                  fi
+                  sha=$(oc get imagestream "$name" -n {{ .Values.namespace }} \
+                    -o jsonpath='{.status.tags[0].items[0].image}' 2>/dev/null)
+                  if echo "$sha" | grep -q sha256; then
+                    echo "$name ready ($sha)"
+                    return 0
+                  fi
+                  echo "Waiting for $name..."
+                  sleep 5
+                done
+              }
+              wait_for_imagestream agent-mesh-data-generation
+              wait_for_imagestream agent-mesh-data-indexing
               echo "All ImageStreams imported successfully"
