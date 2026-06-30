@@ -1,0 +1,215 @@
+# PIPELINE DEFINITION
+# Name: code-analysis-pipeline
+# Description: Clone repo, extract GraphRAG index, run analysis notebook, write reports
+# Inputs:
+#    graphrag_source_path: str [Default: '/opt/app-root/src/workflows/code_understanding/graph_rag_app/source']
+#    index_tar: str [Default: 'graphrag-index.tar.gz']
+#    output_dir: str [Default: '/opt/app-root/src/workflows/code_understanding/reports']
+#    pvc_name: str [Default: '']
+#    question: str [Default: 'Which modules would be riskiest to refactor first? Include the fully qualified names.']
+#    repo_ref: str [Default: 'main']
+#    repo_url: str [Default: '']
+components:
+  comp-analysis-step:
+    executorLabel: exec-analysis-step
+    inputDefinitions:
+      parameters:
+        graphrag_source_path:
+          parameterType: STRING
+        output_dir:
+          parameterType: STRING
+        question:
+          parameterType: STRING
+  comp-extract-step:
+    executorLabel: exec-extract-step
+    inputDefinitions:
+      parameters:
+        index_tar:
+          parameterType: STRING
+  comp-git-clone-step:
+    executorLabel: exec-git-clone-step
+    inputDefinitions:
+      parameters:
+        repo_ref:
+          parameterType: STRING
+        repo_url:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-analysis-step:
+      container:
+        args:
+        - /opt/app-root/src/workflows/code_understanding/data_analysis_graphrag_pipeline.ipynb
+        - /dev/null
+        - --cwd
+        - /opt/app-root/src/workflows/code_understanding
+        - -p
+        - _GRAPHRAG_SOURCE_PATH
+        - '{{$.inputs.parameters[''graphrag_source_path'']}}'
+        - -p
+        - _QUESTION
+        - '{{$.inputs.parameters[''question'']}}'
+        - -p
+        - _OUTPUT_DIR
+        - '{{$.inputs.parameters[''output_dir'']}}'
+        command:
+        - papermill
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
+    exec-extract-step:
+      container:
+        args:
+        - cd /opt/app-root/src/workflows/code_understanding && tar -xzf {{$.inputs.parameters['index_tar']}}
+        command:
+        - sh
+        - -c
+        image: registry.access.redhat.com/ubi9/ubi-minimal
+    exec-git-clone-step:
+      container:
+        args:
+        - if [ -n "$GIT_TOKEN" ]; then git config --global credential.helper '!f()
+          { echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }; f'; fi && git
+          clone {{$.inputs.parameters['repo_url']}} /opt/app-root/src && cd /opt/app-root/src
+          && git checkout {{$.inputs.parameters['repo_ref']}}
+        command:
+        - sh
+        - -c
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
+pipelineInfo:
+  description: Clone repo, extract GraphRAG index, run analysis notebook, write reports
+  name: code-analysis-pipeline
+root:
+  dag:
+    tasks:
+      analysis-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-analysis-step
+        dependentTasks:
+        - extract-step
+        inputs:
+          parameters:
+            graphrag_source_path:
+              componentInputParameter: graphrag_source_path
+            output_dir:
+              componentInputParameter: output_dir
+            question:
+              componentInputParameter: question
+        taskInfo:
+          name: analysis-step
+      extract-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-extract-step
+        dependentTasks:
+        - git-clone-step
+        inputs:
+          parameters:
+            index_tar:
+              componentInputParameter: index_tar
+        taskInfo:
+          name: extract-step
+      git-clone-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-git-clone-step
+        inputs:
+          parameters:
+            repo_ref:
+              componentInputParameter: repo_ref
+            repo_url:
+              componentInputParameter: repo_url
+        taskInfo:
+          name: git-clone-step
+  inputDefinitions:
+    parameters:
+      graphrag_source_path:
+        defaultValue: /opt/app-root/src/workflows/code_understanding/graph_rag_app/source
+        isOptional: true
+        parameterType: STRING
+      index_tar:
+        defaultValue: graphrag-index.tar.gz
+        isOptional: true
+        parameterType: STRING
+      output_dir:
+        defaultValue: /opt/app-root/src/workflows/code_understanding/reports
+        isOptional: true
+        parameterType: STRING
+      pvc_name:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      question:
+        defaultValue: Which modules would be riskiest to refactor first? Include the
+          fully qualified names.
+        isOptional: true
+        parameterType: STRING
+      repo_ref:
+        defaultValue: main
+        isOptional: true
+        parameterType: STRING
+      repo_url:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-analysis-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GRAPHRAG_LLM_TOKEN
+              secretKey: GRAPHRAG_LLM_TOKEN
+            - envVar: GRAPHRAG_LLM_ID
+              secretKey: GRAPHRAG_LLM_ID
+            - envVar: GRAPHRAG_LLM_API_BASE
+              secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+              secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+            - envVar: EMBED_LLM_TOKEN
+              secretKey: EMBED_LLM_TOKEN
+            - envVar: EMBED_LLM_API_BASE
+              secretKey: EMBED_LLM_API_BASE
+            - envVar: EMBED_LLM_ID
+              secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
+              secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
+            optional: false
+            secretName: code-understanding-env
+            secretNameParameter:
+              runtimeValue:
+                constant: code-understanding-env
+        exec-extract-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+        exec-git-clone-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GIT_USERNAME
+              secretKey: GIT_USERNAME
+            - envVar: GIT_TOKEN
+              secretKey: GIT_TOKEN
+            optional: false
+            secretName: git-credentials
+            secretNameParameter:
+              runtimeValue:
+                constant: git-credentials

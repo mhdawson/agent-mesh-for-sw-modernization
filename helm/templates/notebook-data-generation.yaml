@@ -20,7 +20,7 @@ spec:
       {{- if .Values.repoUrl }}
       initContainers:
         - name: git-clone
-          image: alpine/git
+          image: "{{ .Values.registry }}/{{ .Values.dataGeneration.name }}:{{ .Values.version }}"
           command:
             - sh
             - -c

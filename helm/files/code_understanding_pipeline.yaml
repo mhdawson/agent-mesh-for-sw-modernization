@@ -1,0 +1,323 @@
+# PIPELINE DEFINITION
+# Name: code-understanding-pipeline
+# Description: Clone repo, generate GraphRAG metadata, build index, and tar output
+# Inputs:
+#    git_branch: str [Default: 'main']
+#    git_repo: str [Default: '']
+#    graphrag_source_path: str [Default: 'graph_rag_app/source']
+#    languages: str [Default: '["python"]']
+#    max_concurrency: int [Default: 2.0]
+#    n_completions: int [Default: 1.0]
+#    pvc_name: str [Default: '']
+#    repo_ref: str [Default: 'main']
+#    repo_url: str [Default: '']
+#    source_path: str [Default: 'source']
+#    target_path: str [Default: 'target']
+components:
+  comp-data-generation-step:
+    executorLabel: exec-data-generation-step
+    inputDefinitions:
+      parameters:
+        git_branch:
+          parameterType: STRING
+        git_repo:
+          parameterType: STRING
+        languages:
+          parameterType: STRING
+        max_concurrency:
+          parameterType: NUMBER_INTEGER
+        n_completions:
+          parameterType: NUMBER_INTEGER
+        source_path:
+          parameterType: STRING
+        target_path:
+          parameterType: STRING
+  comp-data-indexing-step:
+    executorLabel: exec-data-indexing-step
+    inputDefinitions:
+      parameters:
+        codebase_path:
+          parameterType: STRING
+        graphrag_source_path:
+          parameterType: STRING
+  comp-git-clone-step:
+    executorLabel: exec-git-clone-step
+    inputDefinitions:
+      parameters:
+        repo_ref:
+          parameterType: STRING
+        repo_url:
+          parameterType: STRING
+  comp-tar-step:
+    executorLabel: exec-tar-step
+deploymentSpec:
+  executors:
+    exec-data-generation-step:
+      container:
+        args:
+        - /opt/app-root/src/workflows/code_understanding/data_generation_graphrag_pipeline.ipynb
+        - /dev/null
+        - --cwd
+        - /opt/app-root/src/workflows/code_understanding
+        - -p
+        - _GIT_REPO
+        - '{{$.inputs.parameters[''git_repo'']}}'
+        - -p
+        - _GIT_BRANCH
+        - '{{$.inputs.parameters[''git_branch'']}}'
+        - -p
+        - _SOURCE_PATH
+        - '{{$.inputs.parameters[''source_path'']}}'
+        - -p
+        - _TARGET_PATH
+        - '{{$.inputs.parameters[''target_path'']}}'
+        - -p
+        - _MAX_CONCURRENCY
+        - '{{$.inputs.parameters[''max_concurrency'']}}'
+        - -p
+        - _N_COMPLETIONS
+        - '{{$.inputs.parameters[''n_completions'']}}'
+        - -p
+        - _LANGUAGES
+        - '{{$.inputs.parameters[''languages'']}}'
+        command:
+        - papermill
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-generation:0.0.1-dev
+    exec-data-indexing-step:
+      container:
+        args:
+        - /opt/app-root/src/workflows/code_understanding/data_indexing_graphrag_pipeline.ipynb
+        - /dev/null
+        - --cwd
+        - /opt/app-root/src/workflows/code_understanding
+        - -p
+        - _CODEBASE_PATH
+        - '{{$.inputs.parameters[''codebase_path'']}}'
+        - -p
+        - _GRAPHRAG_SOURCE_PATH
+        - '{{$.inputs.parameters[''graphrag_source_path'']}}'
+        command:
+        - papermill
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
+    exec-git-clone-step:
+      container:
+        args:
+        - if [ -n "$GIT_TOKEN" ]; then git config --global credential.helper '!f()
+          { echo username=$GIT_USERNAME; echo password=$GIT_TOKEN; }; f'; fi && git
+          clone {{$.inputs.parameters['repo_url']}} /opt/app-root/src && cd /opt/app-root/src
+          && git checkout {{$.inputs.parameters['repo_ref']}}
+        command:
+        - sh
+        - -c
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-generation:0.0.1-dev
+    exec-tar-step:
+      container:
+        args:
+        - cd /opt/app-root/src/workflows/code_understanding && tar -czf graphrag-index.tar.gz
+          graph_rag_app/source/output/
+        command:
+        - sh
+        - -c
+        image: registry.access.redhat.com/ubi9/ubi-minimal
+pipelineInfo:
+  description: Clone repo, generate GraphRAG metadata, build index, and tar output
+  name: code-understanding-pipeline
+root:
+  dag:
+    tasks:
+      data-generation-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-data-generation-step
+        dependentTasks:
+        - git-clone-step
+        inputs:
+          parameters:
+            git_branch:
+              componentInputParameter: git_branch
+            git_repo:
+              componentInputParameter: git_repo
+            languages:
+              componentInputParameter: languages
+            max_concurrency:
+              componentInputParameter: max_concurrency
+            n_completions:
+              componentInputParameter: n_completions
+            source_path:
+              componentInputParameter: source_path
+            target_path:
+              componentInputParameter: target_path
+        taskInfo:
+          name: data-generation-step
+      data-indexing-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-data-indexing-step
+        dependentTasks:
+        - data-generation-step
+        inputs:
+          parameters:
+            codebase_path:
+              componentInputParameter: target_path
+            graphrag_source_path:
+              componentInputParameter: graphrag_source_path
+        taskInfo:
+          name: data-indexing-step
+      git-clone-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-git-clone-step
+        inputs:
+          parameters:
+            repo_ref:
+              componentInputParameter: repo_ref
+            repo_url:
+              componentInputParameter: repo_url
+        taskInfo:
+          name: git-clone-step
+      tar-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-tar-step
+        dependentTasks:
+        - data-indexing-step
+        taskInfo:
+          name: tar-step
+  inputDefinitions:
+    parameters:
+      git_branch:
+        defaultValue: main
+        isOptional: true
+        parameterType: STRING
+      git_repo:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      graphrag_source_path:
+        defaultValue: graph_rag_app/source
+        isOptional: true
+        parameterType: STRING
+      languages:
+        defaultValue: '["python"]'
+        isOptional: true
+        parameterType: STRING
+      max_concurrency:
+        defaultValue: 2.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      n_completions:
+        defaultValue: 1.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      pvc_name:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      repo_ref:
+        defaultValue: main
+        isOptional: true
+        parameterType: STRING
+      repo_url:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      source_path:
+        defaultValue: source
+        isOptional: true
+        parameterType: STRING
+      target_path:
+        defaultValue: target
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-data-generation-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GRAPHRAG_LLM_TOKEN
+              secretKey: GRAPHRAG_LLM_TOKEN
+            - envVar: GRAPHRAG_LLM_ID
+              secretKey: GRAPHRAG_LLM_ID
+            - envVar: GRAPHRAG_LLM_API_BASE
+              secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+              secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+            - envVar: EMBED_LLM_TOKEN
+              secretKey: EMBED_LLM_TOKEN
+            - envVar: EMBED_LLM_API_BASE
+              secretKey: EMBED_LLM_API_BASE
+            - envVar: EMBED_LLM_ID
+              secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
+              secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
+            optional: false
+            secretName: code-understanding-env
+            secretNameParameter:
+              runtimeValue:
+                constant: code-understanding-env
+        exec-data-indexing-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GRAPHRAG_LLM_TOKEN
+              secretKey: GRAPHRAG_LLM_TOKEN
+            - envVar: GRAPHRAG_LLM_ID
+              secretKey: GRAPHRAG_LLM_ID
+            - envVar: GRAPHRAG_LLM_API_BASE
+              secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+              secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+            - envVar: EMBED_LLM_TOKEN
+              secretKey: EMBED_LLM_TOKEN
+            - envVar: EMBED_LLM_API_BASE
+              secretKey: EMBED_LLM_API_BASE
+            - envVar: EMBED_LLM_ID
+              secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
+              secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
+            optional: false
+            secretName: code-understanding-env
+            secretNameParameter:
+              runtimeValue:
+                constant: code-understanding-env
+        exec-git-clone-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GIT_USERNAME
+              secretKey: GIT_USERNAME
+            - envVar: GIT_TOKEN
+              secretKey: GIT_TOKEN
+            optional: false
+            secretName: git-credentials
+            secretNameParameter:
+              runtimeValue:
+                constant: git-credentials
+        exec-tar-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name

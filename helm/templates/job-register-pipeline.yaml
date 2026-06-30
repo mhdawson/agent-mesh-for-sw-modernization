@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: register-pipelines
+  namespace: {{ .Values.namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: register
+          image: registry.access.redhat.com/ubi9/python-311
+          command:
+            - sh
+            - -c
+            - |
+              pip install kfp --quiet && python -c "
+              from kfp.client import Client
+
+              KFP_ENDPOINT = 'http://ds-pipeline-dspa.{{ .Values.namespace }}.svc.cluster.local:8888'
+              c = Client(host=KFP_ENDPOINT)
+
+              def register_pipeline(name, path):
+                  pipelines = c.list_pipelines().pipelines or []
+                  existing = next((p for p in pipelines if p.display_name == name), None)
+                  if existing:
+                      c.upload_pipeline_version(
+                          pipeline_package_path=path,
+                          pipeline_id=existing.pipeline_id,
+                          pipeline_version_name='{{ .Values.version }}',
+                      )
+                      print(f'Uploaded new version of {name}: {{ .Values.version }}')
+                  else:
+                      c.upload_pipeline(pipeline_package_path=path, pipeline_name=name)
+                      print(f'Registered {name}')
+
+              register_pipeline('code-understanding-pipeline', '/pipelines/code_understanding_pipeline.yaml')
+              register_pipeline('code-analysis-pipeline', '/pipelines/code_analysis_pipeline.yaml')
+              "
+          volumeMounts:
+            - name: understanding-pipeline-def
+              mountPath: /pipelines/code_understanding_pipeline.yaml
+              subPath: code_understanding_pipeline.yaml
+            - name: analysis-pipeline-def
+              mountPath: /pipelines/code_analysis_pipeline.yaml
+              subPath: code_analysis_pipeline.yaml
+      volumes:
+        - name: understanding-pipeline-def
+          configMap:
+            name: code-understanding-pipeline-def
+        - name: analysis-pipeline-def
+          configMap:
+            name: code-analysis-pipeline-def

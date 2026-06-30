@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: code-understanding-pipeline-def
+  namespace: {{ .Values.namespace }}
+data:
+  code_understanding_pipeline.yaml: |
+{{ .Files.Get "files/code_understanding_pipeline.yaml" | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: code-analysis-pipeline-def
+  namespace: {{ .Values.namespace }}
+data:
+  code_analysis_pipeline.yaml: |
+{{ .Files.Get "files/code_analysis_pipeline.yaml" | indent 4 }}
