@@ -84,11 +84,13 @@ def data_indexing_step(codebase_path: str, graphrag_source_path: str):
 
 
 @dsl.container_component
-def tar_step():
+def tar_step(graphrag_source_path: str):
     return dsl.ContainerSpec(
         image="registry.access.redhat.com/ubi9/ubi-minimal",
         command=["sh", "-c"],
-        args=[f"cd {WORKDIR} && tar -czf graphrag-index.tar.gz graph_rag_app/source/output/"],
+        args=[f"cd {WORKDIR} && tar -czf graphrag-index.tar.gz {{graphrag_source_path}}/output/".format(
+            graphrag_source_path=graphrag_source_path
+        )],
     )
 
 
@@ -132,7 +134,7 @@ def code_understanding_pipeline(
     mount_pvc(idx, pvc_name=pvc_name, mount_path=MOUNT_PATH)
     use_secret_as_env(idx, secret_name=LLM_SECRET_NAME, secret_key_to_env=LLM_ENV_VARS)
 
-    tar = tar_step().after(idx)
+    tar = tar_step(graphrag_source_path=graphrag_source_path).after(idx)
     mount_pvc(tar, pvc_name=pvc_name, mount_path=MOUNT_PATH)
 
 

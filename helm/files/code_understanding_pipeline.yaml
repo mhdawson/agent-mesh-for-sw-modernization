@@ -50,6 +50,10 @@ components:
           parameterType: STRING
   comp-tar-step:
     executorLabel: exec-tar-step
+    inputDefinitions:
+      parameters:
+        graphrag_source_path:
+          parameterType: STRING
 deploymentSpec:
   executors:
     exec-data-generation-step:
@@ -114,7 +118,7 @@ deploymentSpec:
       container:
         args:
         - cd /opt/app-root/src/workflows/code_understanding && tar -czf graphrag-index.tar.gz
-          graph_rag_app/source/output/
+          {{$.inputs.parameters['graphrag_source_path']}}/output/
         command:
         - sh
         - -c
@@ -185,6 +189,10 @@ root:
           name: comp-tar-step
         dependentTasks:
         - data-indexing-step
+        inputs:
+          parameters:
+            graphrag_source_path:
+              componentInputParameter: graphrag_source_path
         taskInfo:
           name: tar-step
   inputDefinitions:

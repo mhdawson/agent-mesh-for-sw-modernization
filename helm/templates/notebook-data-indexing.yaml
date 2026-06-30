@@ -25,9 +25,18 @@ spec:
             - sh
             - -c
             - |
-              git clone {{ .Values.repoUrl }} /opt/app-root/src &&
-              cd /opt/app-root/src &&
-              git checkout {{ .Values.repoRef }}
+              if [ -d /opt/app-root/src/.git ]; then
+                git -C /opt/app-root/src fetch origin
+                git -C /opt/app-root/src checkout "{{ .Values.repoRef }}"
+                git -C /opt/app-root/src reset --hard "origin/{{ .Values.repoRef }}"
+              else
+                git clone "{{ .Values.repoUrl }}" /opt/app-root/src
+                git -C /opt/app-root/src checkout "{{ .Values.repoRef }}"
+              fi
+          envFrom:
+            - secretRef:
+                name: git-credentials
+                optional: true
           volumeMounts:
             - mountPath: /opt/app-root/src
               name: workbench-data-indexing-pvc

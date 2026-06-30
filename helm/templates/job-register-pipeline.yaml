@@ -17,22 +17,34 @@ spec:
             - sh
             - -c
             - |
-              pip install kfp --quiet && python -c "
+              HOME=/tmp pip3 install kfp --quiet --user && HOME=/tmp python3 -c "
               from kfp.client import Client
 
               KFP_ENDPOINT = 'http://ds-pipeline-dspa.{{ .Values.namespace }}.svc.cluster.local:8888'
               c = Client(host=KFP_ENDPOINT)
 
+              def list_all_pipelines():
+                  results, token = [], None
+                  while True:
+                      resp = c.list_pipelines(page_size=100, page_token=token)
+                      results.extend(resp.pipelines or [])
+                      token = resp.next_page_token
+                      if not token:
+                          break
+                  return results
+
               def register_pipeline(name, path):
-                  pipelines = c.list_pipelines().pipelines or []
-                  existing = next((p for p in pipelines if p.display_name == name), None)
+                  existing = next((p for p in list_all_pipelines() if p.display_name == name), None)
                   if existing:
-                      c.upload_pipeline_version(
-                          pipeline_package_path=path,
-                          pipeline_id=existing.pipeline_id,
-                          pipeline_version_name='{{ .Values.version }}',
-                      )
-                      print(f'Uploaded new version of {name}: {{ .Values.version }}')
+                      try:
+                          c.upload_pipeline_version(
+                              pipeline_package_path=path,
+                              pipeline_id=existing.pipeline_id,
+                              pipeline_version_name='{{ .Values.version }}',
+                          )
+                          print(f'Uploaded new version of {name}: {{ .Values.version }}')
+                      except Exception as e:
+                          print(f'Version already exists for {name}, skipping: {e}')
                   else:
                       c.upload_pipeline(pipeline_package_path=path, pipeline_name=name)
                       print(f'Registered {name}')

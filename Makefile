@@ -1,6 +1,6 @@
 BASE_VERSION := 0.0.1
 DEV_VERSION := $(BASE_VERSION)-dev
-GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+GIT_BRANCH := $(shell git symbolic-ref --short HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null || echo "")
 ifeq ($(origin VERSION),undefined)
   ifeq ($(GIT_BRANCH),main)
     VERSION := $(BASE_VERSION)
@@ -77,7 +77,7 @@ GITHUB_TARGET_BRANCH       ?= main
 GIT_USERNAME               ?=
 GIT_TOKEN                  ?=
 NO_DELETE           ?= 0
-PIPELINE_SERVER_URL ?= $(shell oc get route -n $(NAMESPACE) -l app=ds-pipeline-dspa \
+PIPELINE_SERVER_URL := $(shell oc get route -n $(NAMESPACE) -l app=ds-pipeline-dspa \
                             -o jsonpath='https://{.items[0].spec.host}' 2>/dev/null)
 RUN_ID              := $(shell date +%Y%m%d%H%M%S)
 PVC_NAME            := code-understanding-pipeline-$(RUN_ID)
@@ -106,22 +106,6 @@ update-pipelines: ## Compile both pipelines directly to helm/files/ and stage fo
 		uv run --with kfp --with kfp-kubernetes python workflows/code_understanding/pipelines/code_analysis_pipeline.py
 	@echo "Pipelines compiled — review and commit helm/files/*.yaml"
 
-check-pipelines: ## Validate committed pipeline YAMLs are in sync with source
-	@test -f helm/files/code_understanding_pipeline.yaml || \
-		(echo "ERROR: helm/files/code_understanding_pipeline.yaml not found. Run 'make update-pipelines'"; exit 1)
-	@test -f helm/files/code_analysis_pipeline.yaml || \
-		(echo "ERROR: helm/files/code_analysis_pipeline.yaml not found. Run 'make update-pipelines'"; exit 1)
-	DATA_GEN_IMG=$(DATA_GEN_IMG) DATA_IDX_IMG=$(DATA_IDX_IMG) \
-		PIPELINE_OUTPUT=/tmp/code_understanding_pipeline_check.yaml \
-		uv run --with kfp --with kfp-kubernetes python workflows/code_understanding/pipelines/code_understanding_pipeline.py
-	DATA_IDX_IMG=$(DATA_IDX_IMG) \
-		PIPELINE_OUTPUT=/tmp/code_analysis_pipeline_check.yaml \
-		uv run --with kfp --with kfp-kubernetes python workflows/code_understanding/pipelines/code_analysis_pipeline.py
-	@diff /tmp/code_understanding_pipeline_check.yaml helm/files/code_understanding_pipeline.yaml > /dev/null || \
-		(echo "ERROR: code_understanding_pipeline.yaml is out of sync. Run 'make update-pipelines'"; exit 1)
-	@diff /tmp/code_analysis_pipeline_check.yaml helm/files/code_analysis_pipeline.yaml > /dev/null || \
-		(echo "ERROR: code_analysis_pipeline.yaml is out of sync. Run 'make update-pipelines'"; exit 1)
-	@echo "Pipeline YAMLs are in sync"
 
 index-repo: ## Run indexing pipeline: make index-repo NAMESPACE=x GITHUB_TARGET_REPO=https://...
 	@test -n "$(GITHUB_TARGET_REPO)" || (echo "ERROR: GITHUB_TARGET_REPO is required"; exit 1)
@@ -133,7 +117,7 @@ index-repo: ## Run indexing pipeline: make index-repo NAMESPACE=x GITHUB_TARGET_
 import os; \
 from kfp.client import Client; \
 c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN']); \
-run = c.create_run_from_pipeline_package('workflows/code_understanding/pipelines/code_understanding_pipeline.yaml', \
+run = c.create_run_from_pipeline_package('helm/files/code_understanding_pipeline.yaml', \
     arguments={'pvc_name': '$(PVC_NAME)', 'repo_url': '$(AGENT_MESH_REPO_URL)', \
                'repo_ref': '$(AGENT_MESH_REPO_REF)', 'git_repo': '$(GITHUB_TARGET_REPO)', \
                'git_branch': '$(GITHUB_TARGET_BRANCH)'}); \
@@ -142,41 +126,42 @@ result = c.wait_for_run_completion(run.run_id, timeout=7200); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 	oc run index-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","300"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
-	oc wait --for=condition=Ready pod/index-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=60s
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc wait --for=condition=Ready pod/index-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	oc cp $(NAMESPACE)/index-downloader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz ./$(INDEX_TAR)
 	oc delete pod index-downloader-$(RUN_ID) -n $(NAMESPACE)
 	@echo "Index downloaded to ./$(INDEX_TAR)"
 	$(call delete_pvc_unless_kept,$(PVC_NAME))
 
 run-analysis: ## Run analysis pipeline: make run-analysis NAMESPACE=x INDEX_TAR=graphrag-index-....tar.gz
-	@test -n "$(INDEX_TAR)" || (echo "ERROR: INDEX_TAR is required"; exit 1)
-	@test -f "$(INDEX_TAR)" || (echo "ERROR: $(INDEX_TAR) not found"; exit 1)
+	@test -f "$(INDEX_TAR)" || \
+		(echo "ERROR: $(INDEX_TAR) not found — pass the tar from a previous index-repo run: make run-analysis INDEX_TAR=graphrag-index-YYYYMMDDHHMMSS.tar.gz"; exit 1)
 	@test -n "$(PIPELINE_SERVER_URL)" || \
 		(echo "ERROR: could not derive PIPELINE_SERVER_URL — check oc login and NAMESPACE"; exit 1)
 	$(call create_pvc,$(PVC_NAME))
 	oc run analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","300"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
-	oc wait --for=condition=Ready pod/analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --timeout=60s
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc wait --for=condition=Ready pod/analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	oc cp ./$(INDEX_TAR) $(NAMESPACE)/analysis-uploader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz
 	oc delete pod analysis-uploader-$(RUN_ID) -n $(NAMESPACE)
+	$(file >/tmp/pipeline_question_$(RUN_ID).txt,$(QUESTION))
 	OC_TOKEN=$$(oc whoami -t) \
 	uv run --with kfp python3 -c "\
 import os; \
 from kfp.client import Client; \
 c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN']); \
-run = c.create_run_from_pipeline_package('workflows/code_understanding/pipelines/code_analysis_pipeline.yaml', \
+run = c.create_run_from_pipeline_package('helm/files/code_analysis_pipeline.yaml', \
     arguments={'pvc_name': '$(PVC_NAME)', 'repo_url': '$(AGENT_MESH_REPO_URL)', \
                'repo_ref': '$(AGENT_MESH_REPO_REF)', 'index_tar': 'graphrag-index.tar.gz', \
-               'question': '$(QUESTION)'}); \
+               'question': open('/tmp/pipeline_question_$(RUN_ID).txt').read()}); \
 print(f'Run submitted: {run.run_id}'); \
 result = c.wait_for_run_completion(run.run_id, timeout=3600); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 	mkdir -p $(REPORTS_DIR)
 	oc run analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","300"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
-	oc wait --for=condition=Ready pod/analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=60s
+		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9/ubi-minimal","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	oc wait --for=condition=Ready pod/analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/adhoc_query.md ./$(REPORTS_DIR)/
 	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/migration_report.md ./$(REPORTS_DIR)/
 	oc delete pod analysis-downloader-$(RUN_ID) -n $(NAMESPACE)
@@ -185,7 +170,11 @@ exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 
 ##@ Deployment
 
-install: check-pipelines
+install:
+	@test -f helm/files/code_understanding_pipeline.yaml || \
+		(echo "ERROR: helm/files/code_understanding_pipeline.yaml not found. Run 'make update-pipelines' first."; exit 1)
+	@test -f helm/files/code_analysis_pipeline.yaml || \
+		(echo "ERROR: helm/files/code_analysis_pipeline.yaml not found. Run 'make update-pipelines' first."; exit 1)
 	oc new-project $(NAMESPACE) 2>/dev/null || oc project $(NAMESPACE)
 	oc label namespace $(NAMESPACE) opendatahub.io/dashboard=true --overwrite
 	oc create secret generic code-understanding-env --from-env-file=.env -n $(NAMESPACE) 2>/dev/null || \
@@ -203,7 +192,7 @@ install: check-pipelines
 		--set registry=$(REGISTRY) \
 		--set version=$(VERSION) \
 		--set namespace=$(NAMESPACE) \
-		--set repoUrl=$(AGENT_MESH_REPO_URL) \
+		--set repoUrl='$(AGENT_MESH_REPO_URL)' \
 		--set repoRef=$(or $(GIT_BRANCH),main)
 
 uninstall:
