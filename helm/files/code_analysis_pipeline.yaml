@@ -2,6 +2,7 @@
 # Name: code-analysis-pipeline
 # Description: Clone repo, extract GraphRAG index, run analysis notebook, write reports
 # Inputs:
+#    community_level: int [Default: 2.0]
 #    graphrag_source_path: str [Default: '/opt/app-root/src/workflows/code_understanding/graph_rag_app/source']
 #    index_tar: str [Default: 'graphrag-index.tar.gz']
 #    output_dir: str [Default: '/opt/app-root/src/workflows/code_understanding/reports']
@@ -14,6 +15,8 @@ components:
     executorLabel: exec-analysis-step
     inputDefinitions:
       parameters:
+        community_level:
+          parameterType: NUMBER_INTEGER
         graphrag_source_path:
           parameterType: STRING
         output_dir:
@@ -34,6 +37,8 @@ components:
           parameterType: STRING
         repo_url:
           parameterType: STRING
+  comp-prepare-config-step:
+    executorLabel: exec-prepare-config-step
 deploymentSpec:
   executors:
     exec-analysis-step:
@@ -54,13 +59,18 @@ deploymentSpec:
         - -p
         - _OUTPUT_DIR
         - '{{$.inputs.parameters[''output_dir'']}}'
+        - -p
+        - _COMMUNITY_LEVEL
+        - '{{$.inputs.parameters[''community_level'']}}'
         command:
         - papermill
         image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
     exec-extract-step:
       container:
         args:
-        - cd /opt/app-root/src/workflows/code_understanding && tar -xzf {{$.inputs.parameters['index_tar']}}
+        - until [ -f /opt/app-root/src/workflows/code_understanding/{{$.inputs.parameters['index_tar']}}
+          ]; do echo "Waiting for index tar to be uploaded..."; sleep 10; done &&
+          cd /opt/app-root/src/workflows/code_understanding && tar -xzf {{$.inputs.parameters['index_tar']}}
         command:
         - sh
         - -c
@@ -79,6 +89,16 @@ deploymentSpec:
         - sh
         - -c
         image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
+    exec-prepare-config-step:
+      container:
+        args:
+        - import string, os; tmpl = open('/opt/app-root/src/workflows/code_understanding/templates/settings.yaml.in').read();
+          out = string.Template(tmpl).substitute(os.environ); open('/opt/app-root/src/workflows/code_understanding/graph_rag_app/source/settings.yaml',
+          'w').write(out); print('settings.yaml refreshed')
+        command:
+        - python3
+        - -c
+        image: quay.io/midawson/agent-mesh-for-sw-modernization-data-indexing:0.0.1-dev
 pipelineInfo:
   description: Clone repo, extract GraphRAG index, run analysis notebook, write reports
   name: code-analysis-pipeline
@@ -91,9 +111,11 @@ root:
         componentRef:
           name: comp-analysis-step
         dependentTasks:
-        - extract-step
+        - prepare-config-step
         inputs:
           parameters:
+            community_level:
+              componentInputParameter: community_level
             graphrag_source_path:
               componentInputParameter: graphrag_source_path
             output_dir:
@@ -128,8 +150,21 @@ root:
               componentInputParameter: repo_url
         taskInfo:
           name: git-clone-step
+      prepare-config-step:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-prepare-config-step
+        dependentTasks:
+        - extract-step
+        taskInfo:
+          name: prepare-config-step
   inputDefinitions:
     parameters:
+      community_level:
+        defaultValue: 2.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
       graphrag_source_path:
         defaultValue: /opt/app-root/src/workflows/code_understanding/graph_rag_app/source
         isOptional: true
@@ -222,3 +257,36 @@ platforms:
             secretNameParameter:
               runtimeValue:
                 constant: git-credentials
+        exec-prepare-config-step:
+          pvcMount:
+          - componentInputParameter: pvc_name
+            mountPath: /opt/app-root/src
+            pvcNameParameter:
+              componentInputParameter: pvc_name
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: GRAPHRAG_LLM_TOKEN
+              secretKey: GRAPHRAG_LLM_TOKEN
+            - envVar: GRAPHRAG_LLM_ID
+              secretKey: GRAPHRAG_LLM_ID
+            - envVar: GRAPHRAG_LLM_API_BASE
+              secretKey: GRAPHRAG_LLM_API_BASE
+            - envVar: GRAPHRAG_LLM_PROVIDER
+              secretKey: GRAPHRAG_LLM_PROVIDER
+            - envVar: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+              secretKey: GRAPHRAG_LLM_PROVIDER_GRAPHRAG
+            - envVar: EMBED_LLM_TOKEN
+              secretKey: EMBED_LLM_TOKEN
+            - envVar: EMBED_LLM_API_BASE
+              secretKey: EMBED_LLM_API_BASE
+            - envVar: EMBED_LLM_ID
+              secretKey: EMBED_LLM_ID
+            - envVar: EMBED_LLM_PROVIDER
+              secretKey: EMBED_LLM_PROVIDER
+            - envVar: EMBED_LLM_PROVIDER_GRAPHRAG
+              secretKey: EMBED_LLM_PROVIDER_GRAPHRAG
+            optional: false
+            secretName: code-understanding-env
+            secretNameParameter:
+              runtimeValue:
+                constant: code-understanding-env

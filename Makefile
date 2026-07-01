@@ -83,9 +83,18 @@ RUN_ID              := $(shell date +%Y%m%d%H%M%S)
 PVC_NAME            := code-understanding-pipeline-$(RUN_ID)
 INDEXES_DIR         := indexes
 REPO_NAME           := $(basename $(notdir $(GITHUB_TARGET_REPO)))
-INDEX_TAR           := $(INDEXES_DIR)/graphrag-index-$(if $(REPO_NAME),$(REPO_NAME)-,)$(RUN_ID).tar.gz
+INDEX_TAR           ?= $(INDEXES_DIR)/graphrag-index-$(if $(REPO_NAME),$(REPO_NAME)-,)$(RUN_ID).tar.gz
 QUESTION            ?= Which modules would be riskiest to refactor first? Include the fully qualified names.
+COMMUNITY_LEVEL     ?= 2
 REPORTS_DIR         := reports
+MOUNT_PATH          := /opt/app-root/src
+WORKDIR             := $(MOUNT_PATH)/workflows/code_understanding
+# Image used by the analysis pipeline's git_clone_step — extracted from compiled YAML so REGISTRY
+# does not need to be set at run time.
+_GIT_CLONE_IMAGE    := $(shell python3 -c \
+    "import yaml; docs=list(yaml.safe_load_all(open('helm/files/code_analysis_pipeline.yaml'))); \
+     execs={k:v for d in docs for k,v in d.get('deploymentSpec',{}).get('executors',{}).items()}; \
+     print(execs.get('exec-git-clone-step',{}).get('container',{}).get('image',''))" 2>/dev/null)
 
 define create_pvc
 	@echo '{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"$(1)","namespace":"$(NAMESPACE)"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":"50Gi"}}}}' \
@@ -128,26 +137,30 @@ result = c.wait_for_run_completion(run.run_id, timeout=7200); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 	oc run index-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+		--overrides='{"spec":{"serviceAccountName":"pipeline-runner-dspa","volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"$(MOUNT_PATH)","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/index-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
 	mkdir -p $(INDEXES_DIR)
-	oc cp $(NAMESPACE)/index-downloader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz ./$(INDEX_TAR)
+	oc cp $(NAMESPACE)/index-downloader-$(RUN_ID):$(WORKDIR)/graphrag-index.tar.gz ./$(INDEX_TAR)
 	oc delete pod index-downloader-$(RUN_ID) -n $(NAMESPACE)
 	@echo "Index downloaded to $(INDEX_TAR)"
 	$(call delete_pvc_unless_kept,$(PVC_NAME))
 
-run-analysis: ## Run analysis pipeline: make run-analysis NAMESPACE=x INDEX_TAR=graphrag-index-....tar.gz
+run-analysis: ## Run analysis pipeline: make run-analysis NAMESPACE=x INDEX_TAR=indexes/graphrag-index-<repo>-YYYYMMDDHHMMSS.tar.gz
 	@test -f "$(INDEX_TAR)" || \
 		(echo "ERROR: $(INDEX_TAR) not found — pass the tar from a previous index-repo run: make run-analysis INDEX_TAR=indexes/graphrag-index-<repo>-YYYYMMDDHHMMSS.tar.gz"; exit 1)
 	@test -n "$(PIPELINE_SERVER_URL)" || \
 		(echo "ERROR: could not derive PIPELINE_SERVER_URL — check oc login and NAMESPACE"; exit 1)
+	@test -n "$(_GIT_CLONE_IMAGE)" || \
+		(echo "ERROR: could not extract git-clone-step image from helm/files/code_analysis_pipeline.yaml — run 'make update-pipelines' first"; exit 1)
 	$(call create_pvc,$(PVC_NAME))
-	oc run analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+	# Start a long-lived pod using the same image as the pipeline's git_clone_step.
+	# It sleeps until the pipeline's git_clone_step has created the working directory,
+	# at which point we upload the index tar into that directory and delete the pod.
+	oc run analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --image=$(_GIT_CLONE_IMAGE) --restart=Never \
+		--overrides='{"spec":{"serviceAccountName":"pipeline-runner-dspa","volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"ul","image":"$(_GIT_CLONE_IMAGE)","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"$(MOUNT_PATH)","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/analysis-uploader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
-	oc cp ./$(INDEX_TAR) $(NAMESPACE)/analysis-uploader-$(RUN_ID):/data/workflows/code_understanding/graphrag-index.tar.gz
-	oc delete pod analysis-uploader-$(RUN_ID) -n $(NAMESPACE)
 	$(file >/tmp/pipeline_question_$(RUN_ID).txt,$(QUESTION))
+	# Step 1: submit the pipeline and save the run ID for later.
 	OC_TOKEN=$$(oc whoami -t) \
 	uv run --with kfp python3 -c "\
 import os, urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning); \
@@ -156,17 +169,33 @@ c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN'],
 run = c.create_run_from_pipeline_package('helm/files/code_analysis_pipeline.yaml', \
     arguments={'pvc_name': '$(PVC_NAME)', 'repo_url': '$(AGENT_MESH_REPO_URL)', \
                'repo_ref': '$(AGENT_MESH_REPO_REF)', 'index_tar': 'graphrag-index.tar.gz', \
-               'question': open('/tmp/pipeline_question_$(RUN_ID).txt').read()}); \
+               'question': open('/tmp/pipeline_question_$(RUN_ID).txt').read(), \
+               'community_level': $(COMMUNITY_LEVEL)}); \
 print(f'Run submitted: {run.run_id}'); \
-result = c.wait_for_run_completion(run.run_id, timeout=3600); \
+open('/tmp/kfp_run_id_$(RUN_ID).txt', 'w').write(run.run_id)"
+	# Step 2: poll until git_clone_step has created the working directory on the PVC.
+	@echo "Waiting for git_clone_step to create $(WORKDIR) on PVC..."
+	@until oc exec analysis-uploader-$(RUN_ID) -n $(NAMESPACE) -- \
+		test -d $(WORKDIR) 2>/dev/null; do printf '.'; sleep 5; done; echo " ready"
+	# Step 3: upload the index tar into the now-existing directory, then clean up the pod.
+	oc cp $(INDEX_TAR) $(NAMESPACE)/analysis-uploader-$(RUN_ID):$(WORKDIR)/graphrag-index.tar.gz
+	oc delete pod analysis-uploader-$(RUN_ID) -n $(NAMESPACE)
+	@echo "Upload complete — waiting for pipeline to finish..."
+	# Step 4: wait for the full pipeline to complete.
+	OC_TOKEN=$$(oc whoami -t) \
+	uv run --with kfp python3 -c "\
+import os, urllib3; urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning); \
+from kfp.client import Client; \
+c = Client(host='$(PIPELINE_SERVER_URL)', existing_token=os.environ['OC_TOKEN'], verify_ssl=False); \
+run_id = open('/tmp/kfp_run_id_$(RUN_ID).txt').read().strip(); \
+result = c.wait_for_run_completion(run_id, timeout=3600); \
 print(f'Run completed: {result.state}'); \
 exit(0 if str(result.state) == 'SUCCEEDED' else 1)"
 	mkdir -p $(REPORTS_DIR)
 	oc run analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --image=registry.access.redhat.com/ubi9 --restart=Never \
-		--overrides='{"spec":{"volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"/data","name":"pvc"}]}]}}'
+		--overrides='{"spec":{"serviceAccountName":"pipeline-runner-dspa","volumes":[{"name":"pvc","persistentVolumeClaim":{"claimName":"$(PVC_NAME)"}}],"containers":[{"name":"dl","image":"registry.access.redhat.com/ubi9","command":["sleep","infinity"],"volumeMounts":[{"mountPath":"$(MOUNT_PATH)","name":"pvc"}]}]}}'
 	oc wait --for=condition=Ready pod/analysis-downloader-$(RUN_ID) -n $(NAMESPACE) --timeout=300s
-	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/adhoc_query.md ./$(REPORTS_DIR)/
-	oc cp $(NAMESPACE)/analysis-downloader-$(RUN_ID):/data/workflows/code_understanding/reports/migration_report.md ./$(REPORTS_DIR)/
+	oc exec analysis-downloader-$(RUN_ID) -n $(NAMESPACE) -- tar cf - -C $(WORKDIR)/reports . | tar xf - -C ./$(REPORTS_DIR)/
 	oc delete pod analysis-downloader-$(RUN_ID) -n $(NAMESPACE)
 	@echo "Reports downloaded to ./$(REPORTS_DIR)/"
 	$(call delete_pvc_unless_kept,$(PVC_NAME))

@@ -107,9 +107,13 @@ def tar_step(graphrag_source_path: str):
     return dsl.ContainerSpec(
         image="registry.access.redhat.com/ubi9",
         command=["sh", "-c"],
-        args=[f"cd {WORKDIR} && tar -czf graphrag-index.tar.gz {{graphrag_source_path}}/output/".format(
-            graphrag_source_path=graphrag_source_path
-        )],
+        args=[(
+            f"cd {WORKDIR} && tar -czf graphrag-index.tar.gz "
+            f"--exclude={{graphrag_source_path}}/input "
+            f"--exclude={{graphrag_source_path}}/logs "
+            f"--exclude={{graphrag_source_path}}/settings.yaml "
+            f"{{graphrag_source_path}}/"
+        ).format(graphrag_source_path=graphrag_source_path)],
     )
 
 

@@ -10,9 +10,10 @@ import pandas as pd
 class DependencyAnalyzer:
     """Query GraphRAG for dependency analysis"""
 
-    def __init__(self, root_dir="."):
+    def __init__(self, root_dir=".", community_level=2):
 
         self.root_dir = root_dir
+        self.community_level = community_level
 
         self._setup_search()
 
@@ -214,7 +215,7 @@ class DependencyAnalyzer:
                     entities=self.entity_df,
                     communities=self.communities_df,
                     community_reports=self.community_reports_df,
-                    community_level=2,
+                    community_level=self.community_level,
                     response_type="Multiple Paragraphs",
                     query=question,
                     dynamic_community_selection=True,
@@ -230,7 +231,7 @@ class DependencyAnalyzer:
                     text_units=self.text_unit_df,
                     relationships=self.relationship_df,
                     covariates=None,
-                    community_level=2,
+                    community_level=self.community_level,
                     response_type="Multiple Paragraphs",
                     query=question,
                 )

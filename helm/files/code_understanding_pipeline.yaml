@@ -112,7 +112,9 @@ deploymentSpec:
       container:
         args:
         - cd /opt/app-root/src/workflows/code_understanding && tar -czf graphrag-index.tar.gz
-          {{$.inputs.parameters['graphrag_source_path']}}/output/
+          --exclude={{$.inputs.parameters['graphrag_source_path']}}/input --exclude={{$.inputs.parameters['graphrag_source_path']}}/logs
+          --exclude={{$.inputs.parameters['graphrag_source_path']}}/settings.yaml
+          {{$.inputs.parameters['graphrag_source_path']}}/
         command:
         - sh
         - -c

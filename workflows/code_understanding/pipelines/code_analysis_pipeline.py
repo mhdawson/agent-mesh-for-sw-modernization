@@ -49,12 +49,39 @@ def extract_step(index_tar: str):
     return dsl.ContainerSpec(
         image="registry.access.redhat.com/ubi9",
         command=["sh", "-c"],
-        args=[f"cd {WORKDIR} && tar -xzf {{index_tar}}".format(index_tar=index_tar)],
+        args=[(
+            # Poll until the tar appears — the external uploader writes it after git_clone_step
+            # creates the directory, but scheduling of this step may beat the upload.
+            f'until [ -f {WORKDIR}/{{index_tar}} ]; do '
+            'echo "Waiting for index tar to be uploaded..."; sleep 10; '
+            f'done && cd {WORKDIR} && tar -xzf {{index_tar}}'
+        ).format(index_tar=index_tar)],
     )
 
 
 @dsl.container_component
-def analysis_step(graphrag_source_path: str, question: str, output_dir: str):
+def prepare_config_step():
+    """Re-generate settings.yaml from the template using current env vars.
+
+    The tar extracted by extract_step contains a settings.yaml with credentials
+    frozen at index time.  This step overwrites it with a fresh substitution so
+    the analysis always uses the live credentials from the mounted secret.
+    """
+    return dsl.ContainerSpec(
+        image=DATA_INDEXING_IMAGE,
+        command=["python3", "-c"],
+        args=[(
+            "import string, os; "
+            f"tmpl = open('{WORKDIR}/templates/settings.yaml.in').read(); "
+            f"out = string.Template(tmpl).substitute(os.environ); "
+            f"open('{WORKDIR}/graph_rag_app/source/settings.yaml', 'w').write(out); "
+            "print('settings.yaml refreshed')"
+        )],
+    )
+
+
+@dsl.container_component
+def analysis_step(graphrag_source_path: str, question: str, output_dir: str, community_level: int):
     return dsl.ContainerSpec(
         image=DATA_INDEXING_IMAGE,
         command=["papermill"],
@@ -67,6 +94,7 @@ def analysis_step(graphrag_source_path: str, question: str, output_dir: str):
             "-p", "_GRAPHRAG_SOURCE_PATH", graphrag_source_path,
             "-p", "_QUESTION",             question,
             "-p", "_OUTPUT_DIR",           output_dir,
+            "-p", "_COMMUNITY_LEVEL",      community_level,
         ],
     )
 
@@ -83,6 +111,7 @@ def code_analysis_pipeline(
     graphrag_source_path: str = f"{WORKDIR}/graph_rag_app/source",
     question:             str = "Which modules would be riskiest to refactor first? Include the fully qualified names.",
     output_dir:           str = f"{WORKDIR}/reports",
+    community_level:      int = 2,
 ):
     clone = git_clone_step(repo_url=repo_url, repo_ref=repo_ref)
     mount_pvc(clone, pvc_name=pvc_name, mount_path=MOUNT_PATH)
@@ -91,11 +120,16 @@ def code_analysis_pipeline(
     extract = extract_step(index_tar=index_tar).after(clone)
     mount_pvc(extract, pvc_name=pvc_name, mount_path=MOUNT_PATH)
 
+    prep = prepare_config_step().after(extract)
+    mount_pvc(prep, pvc_name=pvc_name, mount_path=MOUNT_PATH)
+    use_secret_as_env(prep, secret_name=LLM_SECRET_NAME, secret_key_to_env=LLM_ENV_VARS)
+
     analysis = analysis_step(
         graphrag_source_path=graphrag_source_path,
         question=question,
         output_dir=output_dir,
-    ).after(extract)
+        community_level=community_level,
+    ).after(prep)
     mount_pvc(analysis, pvc_name=pvc_name, mount_path=MOUNT_PATH)
     use_secret_as_env(analysis, secret_name=LLM_SECRET_NAME, secret_key_to_env=LLM_ENV_VARS)
 
