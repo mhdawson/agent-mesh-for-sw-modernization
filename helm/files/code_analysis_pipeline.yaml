@@ -92,8 +92,9 @@ deploymentSpec:
     exec-prepare-config-step:
       container:
         args:
-        - import string, os; tmpl = open('/opt/app-root/src/workflows/code_understanding/templates/settings.yaml.in').read();
-          out = string.Template(tmpl).substitute(os.environ); open('/opt/app-root/src/workflows/code_understanding/graph_rag_app/source/settings.yaml',
+        - import string, os, re; tmpl = open('/opt/app-root/src/workflows/code_understanding/templates/settings.yaml.in').read();
+          out = string.Template(tmpl).safe_substitute(os.environ); out = re.sub(r'\$\{\w+\}',
+          '0', out); open('/opt/app-root/src/workflows/code_understanding/graph_rag_app/source/settings.yaml',
           'w').write(out); print('settings.yaml refreshed')
         command:
         - python3

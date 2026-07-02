@@ -71,9 +71,10 @@ def prepare_config_step():
         image=DATA_INDEXING_IMAGE,
         command=["python3", "-c"],
         args=[(
-            "import string, os; "
+            "import string, os, re; "
             f"tmpl = open('{WORKDIR}/templates/settings.yaml.in').read(); "
-            f"out = string.Template(tmpl).substitute(os.environ); "
+            "out = string.Template(tmpl).safe_substitute(os.environ); "
+            "out = re.sub(r'\\$\\{\\w+\\}', '0', out); "
             f"open('{WORKDIR}/graph_rag_app/source/settings.yaml', 'w').write(out); "
             "print('settings.yaml refreshed')"
         )],
