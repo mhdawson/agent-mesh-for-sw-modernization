@@ -51,8 +51,8 @@ input:
   
 
 chunks:
-  size: 1200
-  overlap: 100
+  size: ${GRAPHRAG_CHUNK_SIZE}
+  overlap: ${GRAPHRAG_CHUNK_OVERLAP}
   group_by_columns: [id]
 
 ### Output/storage settings ###

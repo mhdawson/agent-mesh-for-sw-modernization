@@ -12,6 +12,7 @@
     7. **classes**: [List of fully qualified names of classes in the file]
     8. **methods**: List of key-value objects with the following fields:
           **method_name**: "Fully qualified name of the method or function"
+          **code**: "The full code associated with the method or function"
           **callees**: [List of fully qualified names of methods that call this method]
           **parameters**: "Description of the parameters and their types"
           **return value**: "Description of return value and its type"

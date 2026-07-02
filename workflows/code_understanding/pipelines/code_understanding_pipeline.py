@@ -86,19 +86,23 @@ def data_generation_step(
 
 
 @dsl.container_component
-def data_indexing_step(codebase_path: str, graphrag_source_path: str):
+def data_indexing_step(codebase_path: str, graphrag_source_path: str, chunk_size: int, chunk_overlap: int):
     return dsl.ContainerSpec(
         image=DATA_INDEXING_IMAGE,
-        command=["papermill"],
-        args=[
-            f"{WORKDIR}/data_indexing_graphrag_pipeline.ipynb",
-            "/dev/null",
-            "--cwd", WORKDIR,
-            "--log-output",
-            "--no-progress-bar",
-            "-p", "_CODEBASE_PATH",        codebase_path,
-            "-p", "_GRAPHRAG_SOURCE_PATH",  graphrag_source_path,
-        ],
+        command=["sh", "-c"],
+        args=[(
+            f"export GRAPHRAG_CHUNK_SIZE={{chunk_size}} && "
+            f"export GRAPHRAG_CHUNK_OVERLAP={{chunk_overlap}} && "
+            f"papermill {WORKDIR}/data_indexing_graphrag_pipeline.ipynb /dev/null "
+            f"--cwd {WORKDIR} --log-output --no-progress-bar "
+            f"-p _CODEBASE_PATH {{codebase_path}} "
+            f"-p _GRAPHRAG_SOURCE_PATH {{graphrag_source_path}}"
+        ).format(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            codebase_path=codebase_path,
+            graphrag_source_path=graphrag_source_path,
+        )],
     )
 
 
@@ -131,6 +135,8 @@ def code_understanding_pipeline(
     graphrag_source_path: str = "graph_rag_app/source",
     max_concurrency:      int = 2,
     n_completions:        int = 1,
+    chunk_size:           int = 2500,
+    chunk_overlap:        int = 300,
 ):
     clone = git_clone_step(repo_url=repo_url, repo_ref=repo_ref)
     mount_pvc(clone, pvc_name=pvc_name, mount_path=MOUNT_PATH)
@@ -151,6 +157,8 @@ def code_understanding_pipeline(
     idx = data_indexing_step(
         codebase_path=target_path,
         graphrag_source_path=graphrag_source_path,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     ).after(gen)
     mount_pvc(idx, pvc_name=pvc_name, mount_path=MOUNT_PATH)
     use_secret_as_env(idx, secret_name=LLM_SECRET_NAME, secret_key_to_env=LLM_ENV_VARS)
