@@ -1,0 +1,78 @@
+name: Test agent-mesh-for-sw-modernization
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to deploy and test
+        default: main
+        type: string
+
+concurrency:
+  group: agent-mesh-for-sw-modernization-ci-testing
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: agent-mesh-for-sw-modernization (${{ inputs.branch }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.12.11"
+
+      - name: Setup and deploy
+        uses: ./.github/actions/setup-and-deploy
+        timeout-minutes: 60
+        with:
+          repo_url: https://github.com/${{ github.repository }}
+          ref: ${{ inputs.branch }}
+          namespace: agent-mesh-for-sw-modernization-ci-project-1
+          deploy_command: "make install MANAGE_NAMESPACE=false DEPLOY_EMBEDDING_MODEL=true"
+        env:
+          PROD_TOKEN: ${{ secrets.PROD_TOKEN }}
+          PROD_SERVER: ${{ secrets.PROD_SERVER }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GRAPHRAG_LLM_TOKEN: ${{ secrets.GRAPHRAG_LLM_TOKEN }}
+          GRAPHRAG_LLM_ID: ${{ vars.GRAPHRAG_LLM_ID }}
+          GRAPHRAG_LLM_API_BASE: ${{ vars.GRAPHRAG_LLM_API_BASE }}
+          GRAPHRAG_LLM_PROVIDER: ${{ vars.GRAPHRAG_LLM_PROVIDER }}
+          GRAPHRAG_LLM_PROVIDER_SETTINGS_XML: ${{ vars.GRAPHRAG_LLM_PROVIDER_SETTINGS_XML }}
+          KFP_NAMESPACE: agent-mesh-for-sw-modernization-ci-project-1
+
+      - name: Deploy console app
+        run: make deploy-console-app
+        working-directory: ./quickstart
+        timeout-minutes: 15
+        env:
+          KFP_NAMESPACE: agent-mesh-for-sw-modernization-ci-project-1
+
+      - name: Run tests
+        uses: ./.github/actions/run-quickstart-tests
+        timeout-minutes: 30
+        with:
+          test_command: "make test-ui"
+          upload_results: "ui/tests_e2e_ui/test-results"
+        env:
+          KFP_NAMESPACE: agent-mesh-for-sw-modernization-ci-project-1
+
+      - name: Cleanup
+        if: always()
+        uses: ./.github/actions/cleanup
+        with:
+          cleanup_command: "make uninstall"
+        env:
+          KFP_NAMESPACE: agent-mesh-for-sw-modernization-ci-project-1

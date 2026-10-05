@@ -56,10 +56,19 @@ Understanding** and **Code Migration**. This repository demonstrates the **Code 
 - (**Optional**) Red Hat build of OpenTelemetry operator [Installation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/distributed_tracing/distributed-tracing-otel-install)
 - (**Optional**) Tempo Operator [Installation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/distributed_tracing/distributed-tracing-tempo-install)
 
-The installer requires a user who can create the target projects and their
-workloads. Deploying project workbench image streams, OpenTelemetry resources,
-or the OpenShift console plugin requires cluster-admin access or equivalent
-delegated permissions.
+The installer requires permission to manage workloads and resources in the
+target project. By default, `make install` also creates the target namespace
+and applies the OpenShift AI dashboard label and requester annotation. If an
+administrator pre-creates and configures the namespace, run
+`make install MANAGE_NAMESPACE=false` to skip those cluster-scoped namespace
+operations. The target namespace must already exist and have the
+`opendatahub.io/dashboard: "true"` label. If OpenTelemetry is enabled in a
+separate namespace, that namespace must also be pre-created.
+
+Workbench ImageStreams are created in the target project and need permission
+to manage resources there. Optional OpenTelemetry deployment and the OpenShift
+console plugin have additional cluster-scoped requirements; use cluster-admin
+or equivalent delegated permissions for those features.
 
 <a id="documentation"></a>
 
@@ -83,8 +92,9 @@ Ensure that you have access to OpenAI-compatible endpoints for the following mod
 
    At minimum, configure the following installation and model values:
 
-   - aws-compatible-storage (S4-backed) and project: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-     `KFP_NAMESPACE`, and optionally `AWS_S3_BUCKET`.
+   - aws-compatible-storage (S4-backed) and project: `AWS_SECRET_ACCESS_KEY` and
+     `KFP_NAMESPACE`. `AWS_ACCESS_KEY_ID` defaults to `aws_storage_userid` for the
+     bundled S4 service; `AWS_S3_BUCKET` defaults to `data`.
    - GraphRAG chat model: `GRAPHRAG_LLM_TOKEN`, `GRAPHRAG_LLM_ID`,
      `GRAPHRAG_LLM_API_BASE`, `GRAPHRAG_LLM_PROVIDER`, and
      `GRAPHRAG_LLM_PROVIDER_SETTINGS_XML`.
